@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>XRPL Q&A Escrow 플랫폼</title>
+</head>
+<body>
+  <h2>📚 질문 등록</h2>
+  <form id="question-form">
+    <label for="questioner">질문자 지갑 시드:</label><br>
+    <input type="text" id="questioner" placeholder="sEd..." required><br><br>
+
+    <label for="question">질문 내용:</label><br>
+    <textarea id="question" rows="4" cols="50" required></textarea><br><br>
+
+    <label for="reward">보상 금액 (XRP):</label><br>
+    <input type="number" id="reward" step="0.1" required><br><br>
+
+    <button type="submit">질문 등록</button>
+  </form>
+
+  <hr>
+  <div id="register-result"></div>
+
+  <div id="answer-section" style="display:none;">
+    <h3>📝 답변 등록</h3>
+    <form id="answer-form">
+      <label for="new-answer">답변 내용:</label><br>
+      <input type="text" id="new-answer" required><br><br>
+      <label for="responder">답변자 주소:</label><br>
+      <input type="text" id="responder" placeholder="r..." required><br><br>
+      <button type="submit">답변 제출</button>
+    </form>
+
+    <h3>💬 등록된 답변</h3>
+    <form id="accept-form">
+      <div id="answer-list"></div><br>
+      <button type="submit">✅ 선택된 답변 채택</button>
+    </form>
+    <div id="accept-result" style="margin-top:20px;"></div>
+  </div>
+
+  <script>
+    let currentQuestion = null;
+
+    // 질문 등록
+    document.getElementById("question-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const question = document.getElementById("question").value;
+      const reward_xrp = parseFloat(document.getElementById("reward").value);
+      const questioner_seed = document.getElementById("questioner").value;
+
+      const response = await fetch("/api/questions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question, reward_xrp, questioner_seed })
+      });
+
+      const result = await response.json();
+      const resultDiv = document.getElementById("register-result");
+
+      if (response.ok) {
+        resultDiv.innerHTML = `✅ 질문 등록 완료! TX Hash: ${result.tx_hash}`;
+        currentQuestion = result.question_id;
+        document.getElementById("answer-section").style.display = "block";
+
+        loadAnswers();
+
+      } else {
+        resultDiv.innerHTML = `<span style="color:red;">❌ 오류: ${result.detail}</span>`;
+      }
+    });
+
+    // 답변 제출
+    document.getElementById("answer-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const answer = document.getElementById("new-answer").value;
+      const responder = document.getElementById("responder").value;
+
+      const response = await fetch("/api/answers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question_id: currentQuestion, answer, responder_address: responder })
+      });
+
+      if (response.ok) {
+        alert("✅ 답변 등록 완료");
+        document.getElementById("new-answer").value = "";
+        loadAnswers();
+      } else {
+        alert("❌ 오류 발생: " + (await response.text()));
+      }
+    });
+
+    // 답변 목록 불러오기
+    async function loadAnswers() {
+      const listDiv = document.getElementById("answer-list");
+      listDiv.innerHTML = "답변을 불러오는 중...";
+
+      const response = await fetch(`/api/answers?question_id=${currentQuestion}`);
+      const answers = await response.json();
+
+      listDiv.innerHTML = answers.map(a => `
+        <input type="radio" name="answer" value="${a.answer}|${a.responder_address}" required> ${a.answer}<br>
+      `).join("");
+    }
+
+    // 답변 채택
+    document.getElementById("accept-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const selected = document.querySelector("input[name='answer']:checked");
+      if (!selected) return;
+      const [answerText, responderAddress] = selected.value.split("|");
+
+      const response = await fetch("/api/finish_escrow", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question_id: currentQuestion, answer: answerText, responder_address: responderAddress })
+      });
+
+      const result = await response.json();
+      const resultDiv = document.getElementById("accept-result");
+
+      if (response.ok) {
+        resultDiv.innerHTML = `🎉 보상 전송 완료! TX Hash: ${result.tx_result.escrow_tx.hash}`;
+      } else {
+        resultDiv.innerHTML = `<span style="color:red">❌ 오류: ${JSON.stringify(result.detail)}</span>`;
+      }
+    });
+  </script>
+</body>
+</html>
