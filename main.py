@@ -204,8 +204,23 @@
 #     return html_path.read_text(encoding="utf-8")
 
 from fastapi import FastAPI
+from app.routes import xaman
+from fastapi.middleware.cors import CORSMiddleware
 from app.routes import questions
+from app.routes import user
 
 app = FastAPI()
 
+# CORS 설정 (Next.js와 통신을 위해)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 실제 운영 시에는 특정 도메인만 허용할 것
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 라우터 등록
+app.include_router(xaman.router)
 app.include_router(questions.router)
+app.include_router(user.router)
