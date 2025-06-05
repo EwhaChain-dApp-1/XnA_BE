@@ -204,10 +204,16 @@
 #     return html_path.read_text(encoding="utf-8")
 
 from fastapi import FastAPI
+from app.models import *  # 모든 모델 import 후
 from app.routes import xaman
 from fastapi.middleware.cors import CORSMiddleware
 from app.routes import questions
 from app.routes import user
+from app.routes import answers
+from app.db.database import engine, Base
+
+Base.metadata.create_all(bind=engine)  # 이 줄이 테이블 생성
+
 
 app = FastAPI()
 
@@ -224,3 +230,5 @@ app.add_middleware(
 app.include_router(xaman.router)
 app.include_router(questions.router)
 app.include_router(user.router)
+app.include_router(answers.router)
+

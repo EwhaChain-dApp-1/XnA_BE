@@ -1,51 +1,134 @@
 # app/routes/questions.py
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from app.schemas.question import QuestionCreate
-from app.models import question, tag, question_tag
+from app.models import question, tag, question_tag, escrow
 from app.db.database import get_db
-
+from typing import List
 from xrpl.clients import JsonRpcClient
 from xrpl.wallet import Wallet
-from xrpl.models.transactions import EscrowCreate
-from xrpl.transaction import autofill_and_sign, submit_and_wait
 from xrpl.utils import xrp_to_drops, datetime_to_ripple_time
+from cryptoconditions import PreimageSha256
 from os import urandom
 from cryptoconditions import PreimageSha256
-from xrpl.utils import datetime_to_ripple_time
 from datetime import datetime, timedelta
 import os
+import xumm
+import xrpl
+from xrpl.clients import JsonRpcClient
+from xrpl.wallet import Wallet
+from xrpl.models.transactions import EscrowCreate, EscrowFinish, Payment
 from dotenv import load_dotenv
-from app.models.question import Question
+from app.models.answer import Answer
+from app.models.escrow import Escrow
 from app.schemas.questionList import QuestionListResponse
+from app.models.question import Question
+from app.schemas.question_signed import QuestionCreateSigned
+import requests
+
 
 load_dotenv()
 PLATFORM_ADDRESS = os.getenv("PLATFORM_ADDRESS")
 PLATFORM_SEED = os.getenv("PLATFORM_SEED")
 client = JsonRpcClient("https://s.altnet.rippletest.net:51234")
 
+xumm_api_key = os.getenv("XUMM_API_KEY")
+xumm_api_secret = os.getenv("XUMM_API_SECRET")
+sdk = xumm.XummSdk(xumm_api_key, xumm_api_secret)
+
 router = APIRouter(prefix="/questions", tags=["questions"])
 
-@router.get("/", response_model=list[QuestionListResponse])
-def list_questions(db: Session = Depends(get_db)):
-    questions = db.query(Question).order_by(Question.created_at.desc()).all()
-    return questions
 
 def add_seconds(days=0, seconds=0):
     dt = datetime.utcnow() + timedelta(days=days, seconds=seconds)
     return datetime_to_ripple_time(dt)
 
-@router.post("/")
-def create_question(payload: QuestionCreate, db: Session = Depends(get_db)):
+
+@router.get("", response_model=list[QuestionListResponse])
+def list_questions(db: Session = Depends(get_db)):
+    questions = db.query(Question).order_by(Question.created_at.desc()).all()
+    return questions
+
+
+@router.get("/{question_id}/answers")
+def get_answers_by_question_id(question_id: int, db: Session = Depends(get_db)):
+    return db.query(Answer).filter(Answer.question_id == question_id).order_by(Answer.created_at.desc()).all()
+
+
+
+@router.get("/recent", response_model=List[QuestionListResponse])
+def get_recent_questions(db: Session = Depends(get_db)):
+    questions = (
+        db.query(question.Question)
+        .order_by(question.Question.created_at.desc())
+        .limit(3)
+        .all()
+    )
+    return questions
+
+
+# @router.get("/escrow/precondition")
+# def create_escrow_condition():
+#     preimage = urandom(32)
+#     fulfillment = PreimageSha256(preimage=preimage)
+#     condition = fulfillment.condition_binary.hex().upper()
+#     fulfillment_hex = fulfillment.serialize_binary().hex().upper()
+#     return {
+#         "preimage": preimage.hex().upper(),
+#         "fulfillment": fulfillment_hex,
+#         "condition": condition
+#     }
+
+
+@router.post("/xumm/create-payload")
+def create_xumm_payload(request_data: dict):
+    """
+    XUMM SDK를 사용하여 Payload 생성
+    """
     try:
-        # 🌐 질문자 지갑
+        # 디버깅 로그 추가
+        print("Request Data:", request_data)
+
+        # XUMM SDK를 사용하여 Payload 생성
+        payload = sdk.payload.create(request_data)
+
+        # 생성된 Payload 반환
+        print("Payload Created:", payload.to_dict())
+        return payload.to_dict()
+
+    except Exception as e:
+        print("Internal Server Error:", str(e))
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+
+@router.get("/xumm/get-payload/{uuid}")
+def get_xumm_payload(uuid: str):
+    """
+    XUMM SDK를 사용하여 Payload 상태 조회
+    """
+    try:
+        # Payload 상태 조회
+        payload = sdk.payload.get(uuid)
+
+        # 조회된 Payload 반환
+        return payload.to_dict()
+
+    except Exception as e:
+        print("Internal Server Error:", str(e))
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+
+
+@router.post("")
+def create_question(payload: QuestionCreateSigned, db: Session = Depends(get_db)):
+    try:
+        # print("✅ create_question 진입, payload:", payload.dict())
+
+        # 1. 사용자 확인
         user = db.query(question.User).filter_by(id=payload.user_id).first()
         if not user or not user.wallet_address:
             raise HTTPException(status_code=400, detail="Invalid user")
 
-        questioner_wallet = Wallet(seed=payload.questioner_seed, sequence=0)
-
-        # 🎯 1. DB에 질문 등록
+        # 2. 질문 저장
         q = question.Question(
             user_id=user.id,
             title=payload.title,
@@ -56,7 +139,7 @@ def create_question(payload: QuestionCreate, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(q)
 
-        # 🎯 2. 태그 처리
+        # 3. 태그 처리
         for tag_name in payload.tags:
             tag_name = tag_name.strip().lstrip("#")
             t = db.query(tag.Tag).filter_by(name=tag_name).first()
@@ -68,40 +151,59 @@ def create_question(payload: QuestionCreate, db: Session = Depends(get_db)):
             db.add(question_tag.QuestionTag(question_id=q.id, tag_id=t.id))
         db.commit()
 
-        # 🎯 3. 에스크로 트랜잭션 생성
         preimage = urandom(32)
         fulfillment = PreimageSha256(preimage=preimage)
         condition = fulfillment.condition_binary.hex().upper()
         fulfillment_hex = fulfillment.serialize_binary().hex().upper()
+        cancel_after = add_seconds(days=30)
 
-        cancel_after = add_seconds(days=7)
+        wallet = Wallet.from_seed("sEdTxWmBUk2dpSHrXtADwHxTvDBKiyE")
 
         escrow_tx = EscrowCreate(
-            account=questioner_wallet.address,
-            destination=PLATFORM_ADDRESS,
+            account=wallet.address,
+            destination="rfiA1zTWa6i7oupfNxQdzyeTWEXfggj3gk",
             amount=xrp_to_drops(payload.reward_xrp),
             condition=condition,
             cancel_after=cancel_after
         )
+        
 
-        signed_tx = autofill_and_sign(escrow_tx, client, questioner_wallet)
-        response = submit_and_wait(signed_tx, client)
+        # autofill + sign → sequence 포함
+        signed_tx = xrpl.transaction.autofill_and_sign(escrow_tx, client, wallet)
 
-        if not response.is_successful():
-            raise HTTPException(status_code=500, detail="Escrow submission failed")
+        # signed_tx.transaction.sequence로 offer_sequence 확보
+        offer_sequence = signed_tx.sequence
 
-        # 🎯 4. DB에 fulfillment 등 정보 저장
-        q.fulfillment = fulfillment_hex
-        q.condition = condition
-        q.tx_hash = response.result.get("hash")
+        # 네트워크에 제출
+        response = xrpl.transaction.submit_and_wait(signed_tx, client)
+        # print("🚀 submit_and_wait 결과:", response.result)
+        tx_hash = response.result.get("hash")
+
+        print("Escrow 생성 완료!")
+        print("Fulfillment 생성:", fulfillment_hex)
+        print("Condition 생성:", condition)
+        print("sequence 번호: ", offer_sequence)
+        print()
+
+        # 4. 에스크로 저장
+        escrow = Escrow(
+            question_id=q.id,
+            token=payload.reward_xrp,
+            tx_hash=tx_hash,
+            fulfillment=fulfillment_hex,
+            condition=condition,
+            cancel_after=cancel_after,
+            offer_sequence=offer_sequence
+        )
+        db.add(escrow)
         db.commit()
 
         return {
             "id": q.id,
-            "tx_hash": q.tx_hash,
-            "condition": q.condition,
-            "fulfillment": q.fulfillment,
-            "message": "질문 등록 및 에스크로 완료"
+            "tx_hash": escrow.tx_hash,
+            "condition": escrow.condition,
+            "fulfillment": escrow.fulfillment,
+            "message": "질문 및 에스크로 등록 완료"
         }
 
     except Exception as e:

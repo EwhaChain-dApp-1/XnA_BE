@@ -4,9 +4,9 @@ from app.schemas.user import UserLoginRequest, UserLoginResponse
 from app.models.user import User
 from app.db.database import get_db
 
-router = APIRouter()
+router = APIRouter(prefix="/users", tags=["users"])
 
-@router.post("/api/users/login", response_model=UserLoginResponse)
+@router.post("/login", response_model=UserLoginResponse)
 def login_user(payload: UserLoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.wallet_address == payload.wallet_address).first()
 

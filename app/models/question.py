@@ -19,3 +19,5 @@ class Question(Base):
 
     # 관계 정의
     user = relationship("User", back_populates="questions")
+    answers = relationship("Answer", back_populates="question")  # 문자열 사용
+    escrow = relationship("Escrow", back_populates="question", uselist=False)
