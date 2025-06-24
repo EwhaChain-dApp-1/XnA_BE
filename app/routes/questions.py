@@ -51,7 +51,25 @@ def list_questions(db: Session = Depends(get_db)):
 
 @router.get("/{question_id}/answers")
 def get_answers_by_question_id(question_id: int, db: Session = Depends(get_db)):
-    return db.query(Answer).filter(Answer.question_id == question_id).order_by(Answer.created_at.desc()).all()
+    answers = (
+        db.query(Answer)
+        .filter(Answer.question_id == question_id)
+        .order_by(Answer.created_at.desc())
+        .all()
+    )
+
+    return [
+        {
+            "id": a.id,
+            "user_id": a.user_id,
+            "question_id": a.question_id,
+            "body": a.body,
+            "created_at": a.created_at.isoformat(),
+            "is_accepted": a.is_accepted,
+            "wallet_address": a.user.wallet_address if a.user else None  # ✅ 핵심
+        }
+        for a in answers
+    ]
 
 
 
@@ -232,5 +250,7 @@ def get_question_detail(question_id: int, db: Session = Depends(get_db)):
         "reward_xrp": float(q.reward_xrp),
         "created_at": q.created_at.isoformat(),
         "wallet_address": q.user.wallet_address,  # 관계로부터 user 지갑 주소 추출
+        "user_id": q.user_id,
         "tags": [t[0] for t in tag_names],
+        "is_reward_sent": q.is_reward_sent,
     }
